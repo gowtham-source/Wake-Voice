@@ -9,5 +9,6 @@ dependencies = [
     "matplotlib>=3.10.8",
     "numpy>=2.3.5",
     "scikit-learn>=1.8.0",
+    "sounddevice>=0.4.6",
     "soundfile>=0.13.1",
 ]

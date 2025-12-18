@@ -1,0 +1,9 @@
+{
+  "best_val_acc": 96.3302752293578,
+  "best_epoch": 29,
+  "test_acc": 96.29629629629629,
+  "test_loss": 0.9013175666332245,
+  "total_epochs": 44,
+  "training_time_minutes": 72.49060699145,
+  "model_parameters": 307694
+}
