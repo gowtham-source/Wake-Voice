@@ -165,8 +165,8 @@ class TANMSFF(nn.Module):
         self,
         n_mels: int = 64,
         num_classes: int = 18,
-        channels: list = [32, 64, 128],
-        num_attention_layers: int = 1,
+        channels: list = [64, 128, 256],
+        num_attention_layers: int = 2,
         num_heads: int = 4,
         dropout: float = 0.2
     ):

@@ -8,7 +8,7 @@ Supports:
 """
 
 import torch
-import torchaudio
+import soundfile as sf
 import torchaudio.transforms as T
 import numpy as np
 from pathlib import Path
@@ -203,6 +203,33 @@ class WakeWordDetector:
         self.n_mels = config.get("n_mels", 64)
         num_classes = config.get("num_classes", 18)
         model_type = config.get("model_type", "full")
+        
+        # Get architecture params from config or infer from state dict
+        channels = config.get("channels", None)
+        num_attention_layers = config.get("num_attention_layers", None)
+        
+        # Infer architecture from state dict if not in config
+        state_dict = checkpoint["model_state_dict"]
+        if channels is None:
+            # Infer from conv_blocks weights
+            # conv_blocks.0 is first MultiScaleConvBlock, output channels = bn.weight size
+            if "conv_blocks.0.bn.weight" in state_dict:
+                ch0 = state_dict["conv_blocks.0.bn.weight"].shape[0]
+            else:
+                ch0 = 64
+            if "conv_blocks.2.bn.weight" in state_dict:
+                ch1 = state_dict["conv_blocks.2.bn.weight"].shape[0]
+            else:
+                ch1 = 128
+            if "conv_blocks.4.bn.weight" in state_dict:
+                ch2 = state_dict["conv_blocks.4.bn.weight"].shape[0]
+            else:
+                ch2 = 256
+            channels = [ch0, ch1, ch2]
+        
+        if num_attention_layers is None:
+            # Count attention blocks
+            num_attention_layers = sum(1 for k in state_dict.keys() if k.startswith("attention_blocks.") and k.endswith(".scale"))
 
         # Get class mappings
         info = checkpoint.get("info", {})
@@ -214,9 +241,14 @@ class WakeWordDetector:
         if self.idx_to_class and isinstance(list(self.idx_to_class.keys())[0], str):
             self.idx_to_class = {int(k): v for k, v in self.idx_to_class.items()}
 
-        # Create model
+        # Create model with inferred architecture
         if model_type == "full":
-            self.model = TANMSFF(n_mels=self.n_mels, num_classes=num_classes)
+            self.model = TANMSFF(
+                n_mels=self.n_mels, 
+                num_classes=num_classes,
+                channels=channels,
+                num_attention_layers=num_attention_layers
+            )
         else:
             self.model = LightweightTANMSFF(n_mels=40, num_classes=num_classes)
 
@@ -226,6 +258,7 @@ class WakeWordDetector:
         self.model.eval()
 
         print(f"Model loaded from {model_path}")
+        print(f"Architecture: channels={channels}, attention_layers={num_attention_layers}")
         print(f"Classes: {self.classes}")
         print(f"Device: {self.device}")
 
@@ -275,8 +308,11 @@ class WakeWordDetector:
         Returns:
             Dictionary with prediction results
         """
-        # Load audio
-        waveform, sample_rate = torchaudio.load(audio_path)
+        # Load audio using soundfile (same as training)
+        data, sample_rate = sf.read(str(audio_path))
+        waveform = torch.from_numpy(data).float()
+        if waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
 
         # Preprocess
         waveform = self._preprocess_audio(waveform, sample_rate)
