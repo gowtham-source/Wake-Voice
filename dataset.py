@@ -8,11 +8,19 @@ import random
 import numpy as np
 import torch
 import soundfile as sf
-import torchaudio
-import torchaudio.transforms as T
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict
+
+# Lazy import torchaudio transforms to avoid DLL issues
+_torchaudio_transforms = None
+
+def get_torchaudio_transforms():
+    global _torchaudio_transforms
+    if _torchaudio_transforms is None:
+        import torchaudio.transforms as T
+        _torchaudio_transforms = T
+    return _torchaudio_transforms
 
 
 class AudioAugmentation:
@@ -47,6 +55,7 @@ class AudioAugmentation:
             rate = random.uniform(0.85, 1.15)
 
         # Use torchaudio's stretch
+        T = get_torchaudio_transforms()
         stretch = T.TimeStretch(n_freq=201, fixed_rate=rate)
         # Convert to spectrogram, stretch, convert back
         spec = torch.stft(waveform, n_fft=400, return_complex=True)
@@ -54,24 +63,37 @@ class AudioAugmentation:
         return torch.istft(stretched, n_fft=400, length=int(waveform.shape[-1] * rate))
 
     def pitch_shift(self, waveform: torch.Tensor, n_steps: int = None) -> torch.Tensor:
-        """Shift pitch by n semitones"""
+        """Shift pitch by n semitones using simple resampling"""
         if n_steps is None:
-            n_steps = random.randint(-3, 3)
+            n_steps = random.randint(-2, 2)  # Reduced range
 
-        # Simple pitch shift using resampling
         if n_steps == 0:
             return waveform
 
+        # Simple pitch shift by changing playback rate
         ratio = 2 ** (n_steps / 12)
-        resampled = torchaudio.functional.resample(
-            waveform, int(self.sample_rate * ratio), self.sample_rate
-        )
-
-        # Adjust length
-        if resampled.shape[-1] > waveform.shape[-1]:
-            return resampled[..., : waveform.shape[-1]]
+        orig_len = waveform.shape[-1]
+        
+        # Resample using interpolation (memory efficient)
+        new_len = int(orig_len / ratio)
+        if new_len < 10:
+            return waveform
+            
+        # Use linear interpolation
+        indices = torch.linspace(0, orig_len - 1, new_len)
+        indices_floor = indices.long().clamp(0, orig_len - 2)
+        frac = indices - indices_floor.float()
+        
+        if waveform.dim() == 2:
+            resampled = waveform[:, indices_floor] * (1 - frac) + waveform[:, indices_floor + 1] * frac
         else:
-            pad = waveform.shape[-1] - resampled.shape[-1]
+            resampled = waveform[indices_floor] * (1 - frac) + waveform[indices_floor + 1] * frac
+
+        # Adjust length back to original
+        if resampled.shape[-1] > orig_len:
+            return resampled[..., :orig_len]
+        else:
+            pad = orig_len - resampled.shape[-1]
             return torch.nn.functional.pad(resampled, (0, pad))
 
     def add_noise(self, waveform: torch.Tensor, snr_db: float = None) -> torch.Tensor:
@@ -135,6 +157,7 @@ class SpecAugment:
         n_time_masks: int = 2,
         p: float = 0.5,
     ):
+        T = get_torchaudio_transforms()
         self.freq_mask = T.FrequencyMasking(freq_mask_param)
         self.time_mask = T.TimeMasking(time_mask_param)
         self.n_freq_masks = n_freq_masks
@@ -178,6 +201,7 @@ class WakeWordDataset(Dataset):
         self.augment = augment
 
         # Mel spectrogram transform
+        T = get_torchaudio_transforms()
         self.mel_transform = T.MelSpectrogram(
             sample_rate=sample_rate,
             n_fft=n_fft,
@@ -221,6 +245,7 @@ class WakeWordDataset(Dataset):
 
         # Resample if necessary
         if sr != self.sample_rate:
+            T = get_torchaudio_transforms()
             resampler = T.Resample(sr, self.sample_rate)
             waveform = resampler(waveform)
 
@@ -322,6 +347,8 @@ def create_data_loaders(
     from sklearn.model_selection import train_test_split
 
     # Create full dataset without augmentation first to get all samples
+    # Remove 'augment' from kwargs if present to avoid duplicate
+    dataset_kwargs.pop('augment', None)
     full_dataset = WakeWordDataset(data_dir, augment=False, **dataset_kwargs)
 
     # Get indices and labels for stratified split
